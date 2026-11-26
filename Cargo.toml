@@ -1,0 +1,27 @@
+[package]
+name = "pdf2word_ops"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance core operators for PDF-to-Word conversion (coordinate transforms, table topology, layout sorting)"
+license = "MIT"
+
+[lib]
+name = "pdf2word_ops"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }
+numpy = "0.30"
+ndarray = { version = "0.17", features = ["std"] }
+rayon = "1.10"
+petgraph = "0.6"
+thiserror = "1.0"
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+strip = true
+
+[package.metadata.maturin]
+sdist-include = ["README.md", "LICENSE", "pyproject.toml"]

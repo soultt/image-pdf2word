@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Rust
+target/
+
+# Build / packaging output
+build/
+dist/
+*.spec.bak
+
+# Local config & secrets
+.env
+config.json
+
+# Local scratch files
+latest.html
