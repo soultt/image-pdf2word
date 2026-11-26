@@ -1,5 +1,7 @@
 # pdf2word
 
+English | [简体中文](README.zh-CN.md)
+
 Convert image-based PDFs to editable Word documents (.docx) with OCR, layout analysis, and structure preservation.
 
 ## Features
@@ -396,3 +398,7 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) includes:
 ## License
 
 MIT License - see LICENSE file for details.
+
+## Sponsor
+
+![微信赞赏码](http://qiniu.yhbsoul.com/oneblog/qrcode/20200623133519785.jpg) | ![支付宝收款码](http://qiniu.yhbsoul.com/oneblog/qrcode/20200623133521901.jpg) |
