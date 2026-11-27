@@ -116,9 +116,13 @@ A Tkinter GUI is available on Windows (the CLI remains unchanged):
 python -m pdf2word gui
 # equivalent: python -m pdf2word.gui
 
-# Build the Windows app (onedir)
+# Build the slim Windows app (onedir, no torch/transformers)
 build_windows.bat
 # output: dist/pdf2word/pdf2word.exe (keep the whole dist/pdf2word folder together)
+
+# Build BOTH editions (slim + full)
+build_windows_all.bat
+# also outputs: dist/pdf2word-full/pdf2word-full.exe
 ```
 
 The GUI supports adding multiple PDFs, choosing an output directory, editing
@@ -132,17 +136,26 @@ running instance to restore/focus its window instead of starting a second copy.
 `pdf2word.exe` for packaged builds, and in the project root for source runs.
 Set `PDF2WORD_APP_DIR` to override that location. The API key is stored in
 plain text in `config.json`, so protect that file if a real key is saved. The
-PyInstaller bundle is large because it includes ONNX Runtime and the Rust
-extension; **torch / transformers are no longer bundled** — they are downloaded
-into `dist/pdf2word/deps/` on first table recognition. The build uses
-**onedir**: the launcher exe sits in `dist/pdf2word/` with its dependencies
-beside it, so startup takes a few seconds instead of unpacking a ~2 GB onefile
-archive on every launch. Zip that folder to distribute it, and keep
-`config.json`, `history.db` and `deps/` next to the exe. Unused transitive
-dependencies (bitsandbytes, surya, pyarrow, numba) are excluded by
-`pdf2word.spec`.
+There are **two onedir builds**:
 
-Build requires PyInstaller (`build_windows.bat` installs it automatically).
+- **Slim** — `dist/pdf2word/pdf2word.exe` (~366 MB). ONNX Runtime and the Rust
+  extension are bundled; **torch / transformers are not** — they are downloaded
+  into `deps/` next to the exe on first table recognition. Ideal for users who
+  rarely need table recognition or have limited disk space at install time.
+- **Full** — `dist/pdf2word-full/pdf2word-full.exe` (~1.6 GB). Torch,
+  Transformers and their dependencies are bundled, so table recognition works
+  offline and no download is needed.
+
+Each build uses **onedir**: the launcher exe sits in its own folder with its
+dependencies beside it, so startup takes a few seconds instead of unpacking a
+~2 GB onefile archive on every launch. Zip the whole folder to distribute it,
+and keep `config.json`, `history.db` and (for the slim build) `deps/` next to
+the exe. The two editions use different folders, so their settings and history
+are isolated. Unused transitive dependencies (bitsandbytes, surya, pyarrow,
+numba) are excluded by the spec files.
+
+Build requires PyInstaller (`build_windows.bat` / `build_windows_all.bat`
+install it automatically).
 
 ### MCP server (HTTP)
 
@@ -181,12 +194,14 @@ available as a GUI checkbox), not by the presence of a base URL.
 
 ### Table recognition dependencies
 
-Table Transformer (PyTorch + Transformers) is optional and is **not shipped in
-the packaged app**. The first time a table block is actually recognized, the
+Table Transformer (PyTorch + Transformers) is optional. In the **slim** build
+it is **not shipped**; the first time a table block is actually recognized, the
 converter starts a background download into `deps/` next to `pdf2word.exe`
 (project root for source runs); that conversion falls back to plain text OCR
-for the table, and the next conversion uses Table Transformer. Progress and
-errors appear in the GUI log panel (or in CLI logs). Details:
+for the table, and the next conversion uses Table Transformer. The **full**
+build (`pdf2word-full`) already bundles the whole stack and never downloads
+anything. Progress and errors appear in the GUI log panel (or in CLI logs).
+Details:
 
 - CPU-only PyTorch wheel (~200 MB) from `download.pytorch.org/whl/cpu`, plus
   pinned Transformers and its dependencies from PyPI. Wheels are downloaded
@@ -244,8 +259,10 @@ pdf2word/
 │   ├── table_deps.py      # On-demand torch/transformers installer
 │   └── __main__.py        # CLI / GUI entry point
 ├── gui_main.py            # PyInstaller entry script
-├── pdf2word.spec          # PyInstaller Windows build spec
-├── build_windows.bat      # One-click Windows build
+├── pdf2word.spec          # PyInstaller spec (slim build)
+├── pdf2word-full.spec     # PyInstaller spec (full build, torch bundled)
+├── build_windows.bat      # One-click slim Windows build
+├── build_windows_all.bat  # Build both slim and full editions
 ├── src/
 │   └── lib.rs             # Rust core operators (PyO3)
 ├── tests/                 # Pytest tests
