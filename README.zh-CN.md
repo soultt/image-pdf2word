@@ -113,16 +113,27 @@ Windows 上提供 Tkinter 图形界面（命令行用法不变）：
 python -m pdf2word gui
 # 等价命令：python -m pdf2word.gui
 
-# 构建 Windows 应用（onedir 模式）
+# 构建精简版 Windows 应用（onedir，不含 torch/transformers）
 build_windows.bat
 # 输出：dist/pdf2word/pdf2word.exe（需保留整个 dist/pdf2word 目录）
+
+# 同时构建两个版本（精简版 + 完整版）
+build_windows_all.bat
+# 另输出：dist/pdf2word-full/pdf2word-full.exe
 ```
 
 GUI 支持添加多个 PDF、选择输出目录、编辑全部转换参数、显示进度/日志，以及带搜索、打开输出和重试操作的历史记录页。它会在系统托盘放置图标：关闭窗口会隐藏到托盘，托盘菜单提供“显示窗口”和“退出”。同一安装目录只允许运行一个实例 —— 再次启动会通知正在运行的实例恢复/聚焦其窗口，而不会启动第二个副本。
 
-`config.json` 和 `history.db` 存放在**应用程序旁边**：打包版位于 `pdf2word.exe` 所在目录，源码运行时位于项目根目录。可通过 `PDF2WORD_APP_DIR` 覆盖该位置。API 密钥以明文保存在 `config.json` 中，如保存了真实密钥请注意保护该文件。PyInstaller 打包体积较大，因为包含 ONNX Runtime 和 Rust 扩展；**不再打包 torch / transformers** —— 它们会在首次进行表格识别时下载到 `dist/pdf2word/deps/`。打包采用 **onedir** 模式：启动程序位于 `dist/pdf2word/`，依赖文件放在同一目录，因此启动只需几秒，不必每次解压约 2 GB 的 onefile 压缩包。分发时将该目录打包即可，并让 `config.json`、`history.db` 和 `deps/` 与 exe 保持同级。无用的间接依赖（bitsandbytes、surya、pyarrow、numba）由 `pdf2word.spec` 排除。
+`config.json` 和 `history.db` 存放在**应用程序旁边**：打包版位于 `pdf2word.exe` 所在目录，源码运行时位于项目根目录。可通过 `PDF2WORD_APP_DIR` 覆盖该位置。API 密钥以明文保存在 `config.json` 中，如保存了真实密钥请注意保护该文件。
 
-构建需要 PyInstaller（`build_windows.bat` 会自动安装）。
+共有 **两种 onedir 打包版本**：
+
+- **精简版** —— `dist/pdf2word/pdf2word.exe`（约 366 MB）。内置 ONNX Runtime 和 Rust 扩展，但**不内置** torch / transformers —— 首次表格识别时会下载到 exe 旁的 `deps/`。适合很少使用表格识别、或安装时磁盘空间有限的用户。
+- **完整版** —— `dist/pdf2word-full/pdf2word-full.exe`（约 1.7 GB）。内置 Torch、Transformers、timm 以及 Table Transformer 的权重和配置，表格识别完全离线，无需任何下载。
+
+两个版本都采用 **onedir** 模式：启动程序位于各自目录，依赖放在同级，因此启动只需几秒，不必每次解压约 2 GB 的 onefile 压缩包。分发时打包整个目录，并让 `config.json`、`history.db`（精简版还包括 `deps/`）与 exe 保持同级。两个版本使用不同目录，因此配置和历史记录相互隔离。无用的间接依赖（bitsandbytes、surya、pyarrow、numba）由 spec 文件排除。
+
+构建需要 PyInstaller（`build_windows.bat` / `build_windows_all.bat` 会自动安装）。
 
 ### MCP 服务（HTTP）
 
@@ -153,7 +164,7 @@ API 配置**不**通过 MCP 管理：`use_layout_api` 和 `layout_api_base/key/m
 
 ### 表格识别依赖
 
-Table Transformer（PyTorch + Transformers）是可选组件，**不包含**在打包应用中。首次真正识别到表格区块时，转换器会在 `pdf2word.exe` 旁的 `deps/` 目录（源码运行时为项目根目录）后台下载依赖；该次转换中表格会回退为纯文本 OCR，下一次转换才会使用 Table Transformer。进度和错误会显示在 GUI 日志面板（或 CLI 日志）中。详情：
+Table Transformer（PyTorch + Transformers）是可选组件。在**精简版**中它**不内置**：首次真正识别到表格区块时，转换器会在 `pdf2word.exe` 旁的 `deps/` 目录（源码运行时为项目根目录）后台下载依赖；该次转换中表格会回退为纯文本 OCR，下一次转换才会使用 Table Transformer。**完整版**（`pdf2word-full`）内置整套依赖**及模型权重**，无需下载任何内容，可完全离线运行。进度和错误会显示在 GUI 日志面板（或 CLI 日志）中。详情：
 
 - 来自 `download.pytorch.org/whl/cpu` 的纯 CPU 版 PyTorch wheel（约 200 MB），以及从 PyPI 安装的固定版本 Transformers 及其依赖。wheel 通过标准库下载并解包 —— **无需 pip，也无需系统 Python** —— 使用 `.installing` 锁文件和 `install.log`。源码运行时仅在直接下载 wheel 失败时才回退到 pip。
 - 无网络、下载受阻或平台不兼容只会禁用表格识别 —— 其余转换仍然成功。
@@ -204,8 +215,10 @@ pdf2word/
 │   ├── table_deps.py      # 按需安装 torch/transformers
 │   └── __main__.py        # CLI / GUI 入口
 ├── gui_main.py            # PyInstaller 入口脚本
-├── pdf2word.spec          # PyInstaller Windows 构建配置
-├── build_windows.bat      # 一键构建 Windows 应用
+├── pdf2word.spec          # PyInstaller 配置（精简版）
+├── pdf2word-full.spec     # PyInstaller 配置（完整版，内置 torch）
+├── build_windows.bat      # 一键构建精简版 Windows 应用
+├── build_windows_all.bat  # 构建精简版与完整版
 ├── src/
 │   └── lib.rs             # Rust 核心算子（PyO3）
 ├── tests/                 # Pytest 测试
