@@ -49,6 +49,7 @@ _PACKAGE_SPECS: List[Tuple[str, str, str]] = [
     ("tokenizers", "0.20.3", "pypi"),
     ("huggingface-hub", "0.27.1", "pypi"),
     ("safetensors", "0.4.5", "pypi"),
+    ("timm", "1.0.11", "pypi"),
     ("regex", "2024.11.6", "pypi"),
     ("pyyaml", "6.0.2", "pypi"),
     ("filelock", "3.16.1", "pypi"),

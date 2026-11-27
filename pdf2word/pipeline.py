@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import logging
 import io
@@ -617,6 +618,19 @@ class PDF2WordConverter:
             )
         return self._layout_predictor
 
+    def _resolve_table_model(self) -> str:
+        """Use the bundled model files when present, otherwise the HF repo id."""
+        repo_id = self.config.table_model
+        name = repo_id.rstrip('/').split('/')[-1]
+        base = getattr(sys, '_MEIPASS', None)
+        root = Path(base) if base else Path(__file__).resolve().parent.parent
+        local = root / 'models' / name
+        required = ('config.json', 'preprocessor_config.json', 'model.safetensors')
+        if all((local / filename).is_file() for filename in required):
+            logger.info("Using bundled table model at %s", local)
+            return str(local)
+        return repo_id
+
     @property
     def table_structure_model(self):
         """Load Table Transformer for structure recognition."""
@@ -633,9 +647,19 @@ class PDF2WordConverter:
                 transformers = table_deps.import_transformers()
                 torch = table_deps.import_torch()
                 model_cls = getattr(transformers, "TableTransformerForObjectDetection")
-                self._table_structure_model = model_cls.from_pretrained(
-                    self.config.table_model
-                )
+                model_path = self._resolve_table_model()
+                if Path(model_path).is_dir():
+                    # Bundled copy: avoid timm trying to fetch separate
+                    # ResNet-18 weights from the Hub. The Table Transformer
+                    # checkpoint already contains the backbone weights.
+                    config_cls = getattr(transformers, "AutoConfig")
+                    config = config_cls.from_pretrained(model_path)
+                    config.use_pretrained_backbone = False
+                    self._table_structure_model = model_cls.from_pretrained(
+                        model_path, config=config
+                    )
+                else:
+                    self._table_structure_model = model_cls.from_pretrained(model_path)
                 self._table_structure_model.eval()
                 if torch.cuda.is_available():
                     self._table_structure_model = self._table_structure_model.cuda()
@@ -660,7 +684,7 @@ class PDF2WordConverter:
                     table_deps.import_transformers(), "DetrImageProcessor"
                 )
                 self._table_structure_processor = processor_cls.from_pretrained(
-                    self.config.table_model
+                    self._resolve_table_model()
                 )
             except Exception as e:
                 logger.warning(f"Failed to load table structure processor: {e}")

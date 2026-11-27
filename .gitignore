@@ -15,6 +15,7 @@ target/
 build/
 dist/
 dist_new/
+models/
 *.spec.bak
 
 # Local config & secrets

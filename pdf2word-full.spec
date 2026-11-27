@@ -9,9 +9,21 @@ Build with: python -m PyInstaller --clean --noconfirm pdf2word-full.spec
 Output is dist/pdf2word-full/pdf2word-full.exe (next to the slim build).
 """
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 datas = []
+
+# Bundle the Table Transformer weights/config so the full build never needs
+# to download from Hugging Face (and never hits requests/certifi SSL issues).
+model_dir = Path("models/table-transformer-structure-recognition")
+if model_dir.is_dir():
+    for model_file in sorted(model_dir.glob("*")):
+        if model_file.is_file():
+            datas.append(
+                (str(model_file), "models/table-transformer-structure-recognition")
+            )
 binaries = []
 hiddenimports = []
 
@@ -35,6 +47,7 @@ for package in (
     "huggingface_hub",
     "tokenizers",
     "safetensors",
+    "timm",
 ):
     try:
         package_datas, package_binaries, package_imports = collect_all(package)

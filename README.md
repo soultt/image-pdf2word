@@ -142,9 +142,9 @@ There are **two onedir builds**:
   extension are bundled; **torch / transformers are not** — they are downloaded
   into `deps/` next to the exe on first table recognition. Ideal for users who
   rarely need table recognition or have limited disk space at install time.
-- **Full** — `dist/pdf2word-full/pdf2word-full.exe` (~1.6 GB). Torch,
-  Transformers and their dependencies are bundled, so table recognition works
-  offline and no download is needed.
+- **Full** — `dist/pdf2word-full/pdf2word-full.exe` (~1.7 GB). Torch,
+  Transformers, timm and the Table Transformer weights/config are all bundled,
+  so table recognition works fully offline and no download is needed.
 
 Each build uses **onedir**: the launcher exe sits in its own folder with its
 dependencies beside it, so startup takes a few seconds instead of unpacking a
@@ -199,8 +199,9 @@ it is **not shipped**; the first time a table block is actually recognized, the
 converter starts a background download into `deps/` next to `pdf2word.exe`
 (project root for source runs); that conversion falls back to plain text OCR
 for the table, and the next conversion uses Table Transformer. The **full**
-build (`pdf2word-full`) already bundles the whole stack and never downloads
-anything. Progress and errors appear in the GUI log panel (or in CLI logs).
+build (`pdf2word-full`) bundles the whole stack **and the model weights**, so it
+never downloads anything and works offline. Progress and errors appear in the
+GUI log panel (or in CLI logs).
 Details:
 
 - CPU-only PyTorch wheel (~200 MB) from `download.pytorch.org/whl/cpu`, plus
