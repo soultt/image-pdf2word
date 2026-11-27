@@ -155,7 +155,7 @@ API 配置**不**通过 MCP 管理：`use_layout_api` 和 `layout_api_base/key/m
 
 Table Transformer（PyTorch + Transformers）是可选组件，**不包含**在打包应用中。首次真正识别到表格区块时，转换器会在 `pdf2word.exe` 旁的 `deps/` 目录（源码运行时为项目根目录）后台下载依赖；该次转换中表格会回退为纯文本 OCR，下一次转换才会使用 Table Transformer。进度和错误会显示在 GUI 日志面板（或 CLI 日志）中。详情：
 
-- 来自 `download.pytorch.org/whl/cpu` 的纯 CPU 版 PyTorch wheel（约 200 MB），以及从 PyPI 安装的固定版本 Transformers 及其依赖；写入 `deps/` 时使用 `.installing` 锁文件和 `install.log`。
+- 来自 `download.pytorch.org/whl/cpu` 的纯 CPU 版 PyTorch wheel（约 200 MB），以及从 PyPI 安装的固定版本 Transformers 及其依赖。wheel 通过标准库下载并解包 —— **无需 pip，也无需系统 Python** —— 使用 `.installing` 锁文件和 `install.log`。源码运行时仅在直接下载 wheel 失败时才回退到 pip。
 - 无网络、下载受阻或平台不兼容只会禁用表格识别 —— 其余转换仍然成功。
 - `PDF2WORD_APP_DIR` 也会移动 `deps/` 目录。设置 `PDF2WORD_NO_AUTO_DEPS=1` 可关闭自动安装，改为手动安装。
 - 备份或删除应用时请一并处理 `deps/`；删除后下次使用会重新触发下载。
