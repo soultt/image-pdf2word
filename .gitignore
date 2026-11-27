@@ -14,6 +14,7 @@ target/
 # Build / packaging output
 build/
 dist/
+dist_new/
 *.spec.bak
 
 # Local config & secrets

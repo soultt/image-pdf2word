@@ -504,11 +504,54 @@ class PDF2WordConverter:
         except Exception:
             pass
 
+    def _sort_blocks(
+        self,
+        blocks: List[LayoutBlock],
+        width_pt: float,
+        height_pt: float,
+        page_num: int,
+    ) -> List[LayoutBlock]:
+        """Order blocks top-to-bottom; degrade gracefully on graph cycles."""
+        if not blocks:
+            return blocks
+        bboxes = np.array([b.bbox_pt for b in blocks], dtype=np.float32)
+        block_types = np.array(
+            [
+                {
+                    'text': 1, 'title': 0, 'table': 3, 'figure': 2,
+                    'caption': 4, 'header': 1, 'footer': 1,
+                }.get(b.label, 1)
+                for b in blocks
+            ],
+            dtype=np.int32,
+        )
+        try:
+            # bboxes are in points; pass point-based page dimensions so the
+            # multi-column threshold in the Rust operator is correct.
+            order = sort_layout_blocks(bboxes, block_types, width_pt, height_pt)
+        except Exception as exc:
+            logger.warning(
+                "Layout ordering failed on page %d: %s; using simple order",
+                page_num + 1,
+                exc,
+            )
+            self._warn(
+                f"第 {page_num + 1} 页布局排序存在冲突，已按从上到下、从左到右输出"
+            )
+            order = sorted(
+                range(len(blocks)),
+                key=lambda i: (float(bboxes[i][1]), float(bboxes[i][0])),
+            )
+        ordered = [blocks[i] for i in order]
+        for index, block in enumerate(ordered):
+            block.reading_order = index
+        return ordered
+
     def _configure_torch_threads(self):
         """Apply thread limits to PyTorch before any table inference runs."""
         global _TORCH_INTEROP_CONFIGURED
         try:
-            import torch
+            torch = table_deps.import_torch()
 
             torch.set_num_threads(self._effective_intra_threads())
             if not _TORCH_INTEROP_CONFIGURED:
@@ -587,9 +630,10 @@ class PDF2WordConverter:
                 return False
             try:
                 self._configure_torch_threads()
-                from transformers import TableTransformerForObjectDetection
-                import torch
-                self._table_structure_model = TableTransformerForObjectDetection.from_pretrained(
+                transformers = table_deps.import_transformers()
+                torch = table_deps.import_torch()
+                model_cls = getattr(transformers, "TableTransformerForObjectDetection")
+                self._table_structure_model = model_cls.from_pretrained(
                     self.config.table_model
                 )
                 self._table_structure_model.eval()
@@ -612,8 +656,10 @@ class PDF2WordConverter:
                 self._table_structure_processor = False
                 return False
             try:
-                from transformers import DetrImageProcessor
-                self._table_structure_processor = DetrImageProcessor.from_pretrained(
+                processor_cls = getattr(
+                    table_deps.import_transformers(), "DetrImageProcessor"
+                )
+                self._table_structure_processor = processor_cls.from_pretrained(
                     self.config.table_model
                 )
             except Exception as e:
@@ -721,6 +767,45 @@ class PDF2WordConverter:
         return pages_data
 
     def _process_page(self, page: fitz.Page, page_num: int, mat: fitz.Matrix) -> PageData:
+        """Process a page, falling back to full-page OCR on any failure."""
+        try:
+            return self._process_page_impl(page, page_num, mat)
+        except Exception as exc:
+            logger.error("Page %d failed: %s; retrying with full-page OCR", page_num + 1, exc)
+            self._warn(f"第 {page_num + 1} 页处理失败，已改为整页 OCR：{exc}")
+            try:
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                    pix.h, pix.w, 3
+                )
+                width_pt = pix.w * 72.0 / self.config.dpi
+                height_pt = pix.h * 72.0 / self.config.dpi
+                bbox_px = np.array([0, 0, pix.w, pix.h], dtype=np.float32)
+                bbox_pt = np.array([0, 0, width_pt, height_pt], dtype=np.float32)
+                block = LayoutBlock(
+                    bbox_px=bbox_px,
+                    bbox_pt=bbox_pt,
+                    label='text',
+                    confidence=1.0,
+                    reading_order=0,
+                )
+                block.ocr_results = self._ocr_results_from_image(img)
+                return PageData(
+                    page_num=page_num,
+                    width_px=pix.w,
+                    height_px=pix.h,
+                    width_pt=width_pt,
+                    height_pt=height_pt,
+                    blocks=[block],
+                )
+            except Exception as exc2:
+                logger.error("Full-page OCR fallback failed for page %d: %s", page_num + 1, exc2)
+                return PageData(
+                    page_num=page_num,
+                    width_px=0, height_px=0, width_pt=0, height_pt=0, blocks=[],
+                )
+
+    def _process_page_impl(self, page: fitz.Page, page_num: int, mat: fitz.Matrix) -> PageData:
         """Process a single page: render, layout analysis, OCR."""
         # Render page to image
         pix = page.get_pixmap(matrix=mat, alpha=False)
@@ -739,6 +824,7 @@ class PDF2WordConverter:
             img_pil = Image.fromarray(img_np)
             layout_results = self.layout_predictor([img_pil])[0]
             api_failed = bool(getattr(layout_results, "error", False))
+            fallback_used = False
             if api_failed:
                 detail = str(getattr(layout_results, "raw", ""))[:160]
                 self._warn(f"第 {page_num + 1} 页布局 API 调用失败，改为整页 OCR：{detail}")
@@ -748,6 +834,7 @@ class PDF2WordConverter:
                 # the whole conversion or producing a blank document.
                 if not api_failed:
                     self._warn(f"第 {page_num + 1} 页布局 API 未返回区块，改为整页 OCR")
+                fallback_used = True
                 layout_results.bboxes = [LayoutBox(
                     polygon=[[0, 0], [width_px, 0], [width_px, height_px], [0, height_px]],
                     confidence=1.0,
@@ -775,17 +862,24 @@ class PDF2WordConverter:
                     reading_order=i,
                 )
 
-                # OCR for text blocks
-                if label in ('text', 'title', 'caption', 'header', 'footer'):
-                    self._ocr_block(img_np, layout_block)
-                elif label == 'table' and self.config.table_recognition:
+                # Only Table and Figure have dedicated handling. Text-like
+                # blocks are filled from whole-page OCR below, so inaccurate
+                # API boxes can no longer crop away a whole line or page.
+                if label == 'table' and self.config.table_recognition:
                     self._recognize_table(img_np, layout_block)
                 elif label == 'figure':
                     if not self.config.extract_figures:
                         continue
                     self._extract_figure(page, layout_block, mat)
+                elif fallback_used:
+                    self._ocr_block(img_np, layout_block)
 
                 blocks.append(layout_block)
+
+            if not fallback_used:
+                self._assign_full_page_ocr(
+                    blocks, self._ocr_results_from_image(img_np)
+                )
         else:
             logger.debug("use_layout_api is disabled; skipping layout model and OCR-ing the full page")
             bbox_px = np.array([0, 0, width_px, height_px], dtype=np.float32)
@@ -800,14 +894,7 @@ class PDF2WordConverter:
             self._ocr_block(img_np, full_page_block)
             blocks.append(full_page_block)
 
-        # Sort blocks by reading order using our own topological sort
-        if blocks:
-            bboxes = np.array([b.bbox_pt for b in blocks])
-            block_types = np.array([{'text': 1, 'title': 0, 'table': 3, 'figure': 2, 'caption': 4, 'header': 1, 'footer': 1}.get(b.label, 1) for b in blocks], dtype=np.int32)
-            sorted_idx = sort_layout_blocks(bboxes, block_types, float(width_px), float(height_px))
-            blocks = [blocks[i] for i in sorted_idx]
-            for new_i, b in enumerate(blocks):
-                b.reading_order = new_i
+        blocks = self._sort_blocks(blocks, width_pt, height_pt, page_num)
 
         # Associate captions with figures and tables
         self._associate_captions(blocks)
@@ -887,43 +974,104 @@ class PDF2WordConverter:
             elif block_bottom > footer_zone and block.label in ('text', 'title'):
                 block._is_footer = True
 
+    def _ocr_results_from_image(
+        self, img: np.ndarray, x_offset: int = 0, y_offset: int = 0
+    ) -> List[OCRResult]:
+        """OCR an image and return results with page-level coordinates."""
+        results: List[OCRResult] = []
+        try:
+            raw, _ = self.ocr(img)
+            if not raw:
+                return results
+            for box, text, conf in raw:
+                if conf < self.config.ocr_conf_threshold:
+                    continue
+                quad = np.array(box, dtype=np.float32)
+                quad[:, 0] += x_offset
+                quad[:, 1] += y_offset
+                xs, ys = quad[:, 0], quad[:, 1]
+                bbox_px = np.array(
+                    [xs.min(), ys.min(), xs.max(), ys.max()], dtype=np.float32
+                )
+                bbox_pt = coords_px_to_pt(
+                    bbox_px.reshape(1, 4), self.config.dpi
+                )[0]
+                results.append(OCRResult(
+                    text=text, confidence=conf, bbox_px=bbox_px, bbox_pt=bbox_pt
+                ))
+        except Exception as e:
+            logger.warning(f"OCR failed: {e}")
+        return results
+
     def _ocr_block(self, img: np.ndarray, block: LayoutBlock):
         """Run OCR on a layout block."""
         x1, y1, x2, y2 = map(int, block.bbox_px)
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(img.shape[1], x2), min(img.shape[0], y2)
+        # Layout APIs give approximate boxes; include a small margin so OCR
+        # still sees the first/last characters of a line.
+        pad_x = max(2, min(16, int((x2 - x1) * 0.02)))
+        pad_y = max(2, min(16, int((y2 - y1) * 0.02)))
+        x1, y1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
+        x2, y2 = min(img.shape[1], x2 + pad_x), min(img.shape[0], y2 + pad_y)
 
         if x2 <= x1 or y2 <= y1:
             return
-
         crop = img[y1:y2, x1:x2]
         if crop.size == 0:
             return
+        block.ocr_results.extend(self._ocr_results_from_image(crop, x1, y1))
 
-        try:
-            result, elapse = self.ocr(crop)
-            if result:
-                for box, text, conf in result:
-                    if conf < self.config.ocr_conf_threshold:
-                        continue
-                    # Convert box coordinates to page coordinates
-                    box = np.array(box, dtype=np.float32)
-                    box[:, 0] += x1
-                    box[:, 1] += y1
+    def _assign_full_page_ocr(
+        self, blocks: List[LayoutBlock], results: List[OCRResult]
+    ) -> None:
+        """Distribute whole-page OCR results into API-provided text blocks.
 
-                    # Compute bbox from quad
-                    xs, ys = box[:, 0], box[:, 1]
-                    ocr_bbox_px = np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=np.float32)
-                    ocr_bbox_pt = coords_px_to_pt(ocr_bbox_px.reshape(1, 4), self.config.dpi)[0]
+        API boxes are approximate; OCR-ing only inside them loses text and can
+        leave a page completely empty. Whole-page OCR is authoritative here:
+        results are assigned to the smallest containing text block, and any
+        leftovers become their own text block so nothing disappears.
+        """
+        if not results:
+            return
+        text_blocks = [b for b in blocks if b.label not in ('table', 'figure')]
+        special_blocks = [b for b in blocks if b.label in ('table', 'figure')]
+        for block in text_blocks:
+            block.ocr_results = []
 
-                    block.ocr_results.append(OCRResult(
-                        text=text,
-                        confidence=conf,
-                        bbox_px=ocr_bbox_px,
-                        bbox_pt=ocr_bbox_pt,
-                    ))
-        except Exception as e:
-            logger.warning(f"OCR failed for block {block.label}: {e}")
+        def contains(block: LayoutBlock, result: OCRResult, pad: float = 2.0) -> bool:
+            cx = (result.bbox_pt[0] + result.bbox_pt[2]) / 2
+            cy = (result.bbox_pt[1] + result.bbox_pt[3]) / 2
+            x1, y1, x2, y2 = block.bbox_pt
+            return x1 - pad <= cx <= x2 + pad and y1 - pad <= cy <= y2 + pad
+
+        unassigned: List[OCRResult] = []
+        for result in results:
+            candidates = [b for b in text_blocks if contains(b, result)]
+            if candidates:
+                smallest = min(
+                    candidates,
+                    key=lambda b: (b.bbox_pt[2] - b.bbox_pt[0])
+                    * (b.bbox_pt[3] - b.bbox_pt[1]),
+                )
+                smallest.ocr_results.append(result)
+            elif not any(contains(b, result) for b in special_blocks):
+                unassigned.append(result)
+
+        if unassigned:
+            scale = self.config.dpi / 72.0
+            bbox_pt = np.array([
+                min(r.bbox_pt[0] for r in unassigned),
+                min(r.bbox_pt[1] for r in unassigned),
+                max(r.bbox_pt[2] for r in unassigned),
+                max(r.bbox_pt[3] for r in unassigned),
+            ], dtype=np.float32)
+            blocks.append(LayoutBlock(
+                bbox_px=bbox_pt * scale,
+                bbox_pt=bbox_pt,
+                label='text',
+                confidence=1.0,
+                reading_order=-1,
+                ocr_results=unassigned,
+            ))
 
     def _recognize_table(self, img: np.ndarray, block: LayoutBlock):
         """Recognize table structure using Table Transformer + OCR for cells."""
@@ -968,7 +1116,7 @@ class PDF2WordConverter:
             return None
 
         try:
-            import torch
+            torch = table_deps.import_torch()
             from PIL import Image as PILImage
             
             # Convert to PIL
@@ -1231,19 +1379,41 @@ class PDF2WordConverter:
 
         return doc
 
+    @staticmethod
+    def _deduplicate_ocr(page: PageData) -> None:
+        """Drop duplicate OCR lines caused by slightly overlapping blocks."""
+        seen = []
+        for block in page.blocks:
+            kept = []
+            for result in block.ocr_results:
+                cx = (result.bbox_pt[0] + result.bbox_pt[2]) / 2
+                cy = (result.bbox_pt[1] + result.bbox_pt[3]) / 2
+                if any(
+                    text == result.text and abs(cx - x) < 3 and abs(cy - y) < 3
+                    for x, y, text in seen
+                ):
+                    continue
+                seen.append((cx, cy, result.text))
+                kept.append(result)
+            block.ocr_results = kept
+
     def _render_page(self, doc: Document, page: PageData):
         """Render a single page's blocks into the Word document."""
+        self._deduplicate_ocr(page)
         for block in page.blocks:
             # Check header/footer via flags instead of mutated labels
             label = 'header' if getattr(block, '_is_header', False) else (
                 'footer' if getattr(block, '_is_footer', False) else block.label
             )
-            if label in ('text', 'title', 'caption', 'header', 'footer'):
-                self._render_text_block(doc, block, page.width_pt, label)
-            elif label == 'table':
+            if label == 'table':
                 self._render_table(doc, block)
             elif label == 'figure' and self.config.extract_figures:
                 self._render_figure(doc, block)
+            elif block.ocr_results:
+                # Unknown model-specific labels still contain OCR'd content;
+                # rendering them as plain text prevents silent data loss.
+                text_type = label if label in ('title', 'caption') else 'text'
+                self._render_text_block(doc, block, page.width_pt, text_type)
 
     def _render_text_block(self, doc: Document, block: LayoutBlock, page_width_pt: float = None,
                            block_type: Optional[str] = None):

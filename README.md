@@ -189,8 +189,10 @@ for the table, and the next conversion uses Table Transformer. Progress and
 errors appear in the GUI log panel (or in CLI logs). Details:
 
 - CPU-only PyTorch wheel (~200 MB) from `download.pytorch.org/whl/cpu`, plus
-  pinned Transformers and its dependencies from PyPI; written to `deps/` with
-  a `.installing` lock and an `install.log`.
+  pinned Transformers and its dependencies from PyPI. Wheels are downloaded
+  and unpacked with the standard library — **no pip and no system Python are
+  required** — using a `.installing` lock and an `install.log`. Source runs
+  fall back to pip only if direct wheel download fails.
 - No network access, blocked download or incompatible platform merely disables
   table recognition — the rest of the conversion still succeeds.
 - `PDF2WORD_APP_DIR` also moves `deps/`. Set `PDF2WORD_NO_AUTO_DEPS=1` to

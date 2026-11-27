@@ -4,6 +4,7 @@ import json
 import pytest
 import numpy as np
 from pathlib import Path
+from docx import Document
 from pdf2word.pipeline import (
     pdf_to_docx,
     PDF2WordConverter,
@@ -286,6 +287,135 @@ class TestLayoutMode:
         assert called["count"] == 1
         assert len(data.blocks) == 1
         assert data.blocks[0].label == "title"
+
+
+class TestLayoutApiRendering:
+    """Content must not disappear because of unusual API labels."""
+
+    @staticmethod
+    def _converter():
+        converter = PDF2WordConverter.__new__(PDF2WordConverter)
+        converter.config = ConversionConfig()
+        return converter
+
+    @staticmethod
+    def _block(label, text, x=100.0, y=100.0):
+        result = OCRResult(
+            text=text,
+            confidence=0.9,
+            bbox_px=np.array([0, 0, 10, 10], dtype=np.float32),
+            bbox_pt=np.array([x, y, x + 40, y + 12], dtype=np.float32),
+        )
+        block = LayoutBlock(
+            bbox_px=np.array([0, 0, 10, 10], dtype=np.float32),
+            bbox_pt=np.array([x, y, x + 40, y + 12], dtype=np.float32),
+            label=label,
+            confidence=0.9,
+            reading_order=0,
+            ocr_results=[result],
+        )
+        return block
+
+    def test_unknown_label_is_rendered_as_text(self):
+        converter = self._converter()
+        block = self._block("section-header", "重要内容")
+        page = PageData(
+            page_num=1,
+            width_px=100,
+            height_px=100,
+            width_pt=595,
+            height_pt=842,
+            blocks=[block],
+        )
+        doc = Document()
+        converter._render_page(doc, page)
+        assert doc.paragraphs[0].text == "重要内容"
+
+    def test_full_page_ocr_fills_blocks_and_keeps_leftovers(self):
+        converter = self._converter()
+
+        def block(label, x1, y1, x2, y2):
+            return LayoutBlock(
+                bbox_px=np.array([x1, y1, x2, y2], dtype=np.float32),
+                bbox_pt=np.array([x1, y1, x2, y2], dtype=np.float32),
+                label=label,
+                confidence=0.9,
+                reading_order=0,
+            )
+
+        def result(text, cx, cy):
+            return OCRResult(
+                text=text,
+                confidence=0.9,
+                bbox_px=np.array([cx - 5, cy - 5, cx + 5, cy + 5], dtype=np.float32),
+                bbox_pt=np.array([cx - 5, cy - 5, cx + 5, cy + 5], dtype=np.float32),
+            )
+
+        outer = block('text', 0, 0, 500, 800)
+        inner = block('text', 100, 100, 140, 120)
+        blocks = [outer, inner]
+        converter._assign_full_page_ocr(
+            blocks, [result('inner', 120, 110), result('leftover', 600, 900)]
+        )
+
+        assert [r.text for r in inner.ocr_results] == ['inner']
+        assert outer.ocr_results == []
+        assert len(blocks) == 3
+        assert [r.text for r in blocks[-1].ocr_results] == ['leftover']
+
+    def test_page_failure_falls_back_to_full_page_ocr(self, monkeypatch):
+        converter = self._converter()
+
+        def fail(*args, **kwargs):
+            raise RuntimeError('layout API exploded')
+
+        monkeypatch.setattr(converter, '_process_page_impl', fail)
+        quad = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], dtype=np.float32)
+        monkeypatch.setattr(
+            converter, '_ocr', lambda img: ([(quad, '兜底文字', 0.9)], 0.0), raising=False
+        )
+
+        import fitz
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        try:
+            data = converter._process_page(page, 0, fitz.Matrix(1, 1))
+        finally:
+            doc.close()
+
+        assert data.blocks
+        assert data.blocks[0].ocr_results[0].text == '兜底文字'
+
+    def test_layout_sort_cycle_falls_back_to_simple_order(self, monkeypatch):
+        converter = self._converter()
+        lower = self._block('text', '下方', 100, 200)
+        upper = self._block('text', '上方', 100, 100)
+
+        def cyclic_sort(*args, **kwargs):
+            raise RuntimeError('Table topology error: Cycle detected in layout graph')
+
+        monkeypatch.setattr('pdf2word.pipeline.sort_layout_blocks', cyclic_sort)
+        ordered = converter._sort_blocks([lower, upper], 595, 842, 43)
+
+        assert [b.ocr_results[0].text for b in ordered] == ['上方', '下方']
+        assert [b.reading_order for b in ordered] == [0, 1]
+
+    def test_duplicate_ocr_lines_are_removed(self):
+        converter = self._converter()
+        first = self._block("text", "重复", 100.0, 100.0)
+        second = self._block("text", "重复", 101.0, 100.5)
+        page = PageData(
+            page_num=1,
+            width_px=100,
+            height_px=100,
+            width_pt=595,
+            height_pt=842,
+            blocks=[first, second],
+        )
+        converter._deduplicate_ocr(page)
+        assert len(first.ocr_results) == 1
+        assert len(second.ocr_results) == 0
 
 
 # Integration tests (require test PDF)
