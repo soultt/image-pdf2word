@@ -363,4 +363,6 @@ MIT License —— 详见 LICENSE 文件。
 
 ## 赞助
 
-![微信赞赏码](http://qiniu.yhbsoul.com/oneblog/qrcode/20200623133519785.jpg) | ![支付宝收款码](http://qiniu.yhbsoul.com/oneblog/qrcode/20200623133521901.jpg) |
+| 微信赞赏码 | 支付宝收款码 |
+| :---: | :---: |
+| <img src="http://qiniu.yhbsoul.com/oneblog/qrcode/20200623133519785.jpg" alt="微信赞赏码" width="180"> | <img src="http://qiniu.yhbsoul.com/oneblog/qrcode/20200623133521901.jpg" alt="支付宝收款码" width="180"> |
